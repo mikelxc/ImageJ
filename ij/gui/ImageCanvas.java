@@ -78,7 +78,7 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 	private Image offScreenImage;
 	private int offScreenWidth = 0;
 	private int offScreenHeight = 0;
-	private double offScreenScaleX = 1.0, offScreenScaleY = 1.0;
+	private boolean offScreenDeviceBuffer;
 	private boolean mouseExited = true;
 	private boolean customRoi;
 	private boolean drawNames;
@@ -540,22 +540,35 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 		final int srcRectWidthMag = (int)(srcRect.width*magnification+0.5);
 		final int srcRectHeightMag = (int)(srcRect.height*magnification+0.5);
 		AffineTransform transform = ((Graphics2D)g).getTransform();
-		double scaleX = Math.max(1.0, Math.hypot(transform.getScaleX(), transform.getShearY()));
-		double scaleY = Math.max(1.0, Math.hypot(transform.getShearX(), transform.getScaleY()));
-		final int bufferWidth = (int)Math.ceil(srcRectWidthMag*scaleX);
-		final int bufferHeight = (int)Math.ceil(srcRectHeightMag*scaleY);
+		boolean deviceBuffer = transform.getScaleX()!=1.0 || transform.getScaleY()!=1.0
+			|| transform.getShearX()!=0.0 || transform.getShearY()!=0.0
+			|| transform.getTranslateX()!=Math.floor(transform.getTranslateX())
+			|| transform.getTranslateY()!=Math.floor(transform.getTranslateY());
+		Rectangle bufferBounds = deviceBuffer
+			? transform.createTransformedShape(new Rectangle(0, 0, srcRectWidthMag, srcRectHeightMag)).getBounds()
+			: new Rectangle(0, 0, srcRectWidthMag, srcRectHeightMag);
+		final int bufferWidth = bufferBounds.width;
+		final int bufferHeight = bufferBounds.height;
+		if (bufferWidth<=0 || bufferHeight<=0)
+			return;
+		AffineTransform imageTransform = null;
+		if (deviceBuffer) {
+			try {
+				imageTransform = transform.createInverse();
+				imageTransform.translate(bufferBounds.x, bufferBounds.y);
+			} catch (NoninvertibleTransformException e) { return; }
+		}
 		if (offScreenImage==null || offScreenWidth!=bufferWidth || offScreenHeight!=bufferHeight
-				|| offScreenScaleX!=scaleX || offScreenScaleY!=scaleY) {
+				|| offScreenDeviceBuffer!=deviceBuffer) {
 			if (offScreenImage!=null)
 				offScreenImage.flush();
 			// Explicit raster dimensions avoid depending on a platform Image's backing scale.
-			offScreenImage = scaleX==1.0 && scaleY==1.0
+			offScreenImage = !deviceBuffer
 				? createImage(bufferWidth, bufferHeight)
-				: new BufferedImage(bufferWidth, bufferHeight, BufferedImage.TYPE_INT_RGB);
+				: new BufferedImage(bufferWidth, bufferHeight, BufferedImage.TYPE_INT_ARGB);
 			offScreenWidth = bufferWidth;
 			offScreenHeight = bufferHeight;
-			offScreenScaleX = scaleX;
-			offScreenScaleY = scaleY;
+			offScreenDeviceBuffer = deviceBuffer;
 		}
 		Roi roi = imp.getRoi();
 		try {
@@ -565,9 +578,15 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 			}
 			Graphics offScreenGraphics = offScreenImage.getGraphics();
 			try {
-				if (scaleX!=1.0 || scaleY!=1.0)
-					((Graphics2D)offScreenGraphics).scale((double)bufferWidth/srcRectWidthMag,
-						(double)bufferHeight/srcRectHeightMag);
+				if (deviceBuffer) {
+					Graphics2D bufferGraphics = (Graphics2D)offScreenGraphics;
+					bufferGraphics.setComposite(AlphaComposite.Clear);
+					bufferGraphics.fillRect(0, 0, bufferWidth, bufferHeight);
+					bufferGraphics.setComposite(AlphaComposite.SrcOver);
+					AffineTransform bufferTransform = AffineTransform.getTranslateInstance(-bufferBounds.x, -bufferBounds.y);
+					bufferTransform.concatenate(transform);
+					bufferGraphics.setTransform(bufferTransform);
+				}
 				setInterpolation(offScreenGraphics, Prefs.interpolateScaledImages);
 				Image img = imp.getImage();
 				if (img!=null)
@@ -586,7 +605,14 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 			} finally {
 				offScreenGraphics.dispose();
 			}
-			g.drawImage(offScreenImage, 0, 0, srcRectWidthMag, srcRectHeightMag, null);
+			if (deviceBuffer) {
+				// Present at an integer device-pixel origin without a second resampling.
+				Graphics2D displayGraphics = (Graphics2D)g.create();
+				try {
+					displayGraphics.drawImage(offScreenImage, imageTransform, null);
+				} finally { displayGraphics.dispose(); }
+			} else
+				g.drawImage(offScreenImage, 0, 0, null);
 		}
 		catch(OutOfMemoryError e) {IJ.outOfMemory("Paint");}
 	}

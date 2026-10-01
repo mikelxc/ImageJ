@@ -24,17 +24,22 @@ public class ImageCanvasHiDpiTest {
         public ImageCanvas getCanvas() { return canvas; }
     }
 
-    private SyntheticImage image() {
-        int[] pixels = new int[128*128];
-        for (int y=0; y<128; y++)
-            for (int x=0; x<128; x++)
-                pixels[y*128+x] = ((x+y)%2==0) ? 0xffffff : 0;
-        return new SyntheticImage(new ColorProcessor(128,128,pixels));
+    private SyntheticImage image() { return image(128); }
+
+    private SyntheticImage image(int size) {
+        int[] pixels = new int[size*size];
+        for (int y=0; y<size; y++)
+            for (int x=0; x<size; x++)
+                pixels[y*size+x] = ((x+y)%2==0) ? 0xffffff : 0;
+        return new SyntheticImage(new ColorProcessor(size,size,pixels));
     }
+
+    private boolean translated;
 
     private BufferedImage render(Canvas canvas, double sx, double sy) {
         BufferedImage result = new BufferedImage(512,512,BufferedImage.TYPE_INT_RGB);
         Graphics2D g = result.createGraphics();
+        if (translated) g.translate(0.25,0.5);
         g.scale(sx,sy);
         canvas.paint(g);
         g.dispose();
@@ -50,20 +55,30 @@ public class ImageCanvasHiDpiTest {
 
     @Test public void roiOverlayAndShowAllPreserveDetail() { checkRendering(false, false); }
     @Test public void croppedSourcePreservesDetail() { checkRendering(true, false); }
+    @Test public void oddCroppedSourcePreservesDetail() { checkRendering(true, false, 129); }
     @Test public void interpolatedSourcePreservesDetail() { checkRendering(false, true); }
 
-    private void checkRendering(boolean cropped, boolean interpolateImages) {
+    @Test public void fractionalScaleWithOddLogicalSizePreservesDetail() { checkRendering(false, false, 130); }
+    @Test public void translatedDeviceTransformPreservesDetail() {
+        translated = true;
+        try { checkRendering(false, false, 130); } finally { translated = false; }
+    }
+    @Test public void odd129SourcePreservesDetail() { checkRendering(false, false, 129); }
+    @Test public void oddSourceSizePreservesDetail() { checkRendering(false, false, 131); }
+
+    private void checkRendering(boolean cropped, boolean interpolateImages) { checkRendering(cropped, interpolateImages, 128); }
+    private void checkRendering(boolean cropped, boolean interpolateImages, int size) {
         boolean buffered = Prefs.paintDoubleBuffered;
         boolean interpolate = Prefs.interpolateScaledImages;
         try {
             Prefs.paintDoubleBuffered = false;
             Prefs.interpolateScaledImages = interpolateImages;
-            SyntheticImage imp = image();
+            SyntheticImage imp = image(size);
             int[] original = ((int[])imp.getProcessor().getPixels()).clone();
             Canvas canvas = new Canvas(imp);
             imp.canvas = canvas;
             if (cropped) {
-                canvas.setSourceRect(new java.awt.Rectangle(16,16,96,96));
+                canvas.setSourceRect(new java.awt.Rectangle(16,16,size-32,size-32));
                 canvas.hideZoomIndicator(true);
             }
             for (double zoom : new double[]{0.5,1.0,2.0}) {
