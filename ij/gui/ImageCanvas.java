@@ -78,6 +78,7 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 	private Image offScreenImage;
 	private int offScreenWidth = 0;
 	private int offScreenHeight = 0;
+	private double offScreenScaleX = 1.0, offScreenScaleY = 1.0;
 	private boolean mouseExited = true;
 	private boolean customRoi;
 	private boolean drawNames;
@@ -538,10 +539,23 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 	void paintDoubleBuffered(Graphics g) {
 		final int srcRectWidthMag = (int)(srcRect.width*magnification+0.5);
 		final int srcRectHeightMag = (int)(srcRect.height*magnification+0.5);
-		if (offScreenImage==null || offScreenWidth!=srcRectWidthMag || offScreenHeight!=srcRectHeightMag) {
-			offScreenImage = createImage(srcRectWidthMag, srcRectHeightMag);
-			offScreenWidth = srcRectWidthMag;
-			offScreenHeight = srcRectHeightMag;
+		AffineTransform transform = ((Graphics2D)g).getTransform();
+		double scaleX = Math.max(1.0, Math.hypot(transform.getScaleX(), transform.getShearY()));
+		double scaleY = Math.max(1.0, Math.hypot(transform.getShearX(), transform.getScaleY()));
+		final int bufferWidth = (int)Math.ceil(srcRectWidthMag*scaleX);
+		final int bufferHeight = (int)Math.ceil(srcRectHeightMag*scaleY);
+		if (offScreenImage==null || offScreenWidth!=bufferWidth || offScreenHeight!=bufferHeight
+				|| offScreenScaleX!=scaleX || offScreenScaleY!=scaleY) {
+			if (offScreenImage!=null)
+				offScreenImage.flush();
+			// Explicit raster dimensions avoid depending on a platform Image's backing scale.
+			offScreenImage = scaleX==1.0 && scaleY==1.0
+				? createImage(bufferWidth, bufferHeight)
+				: new BufferedImage(bufferWidth, bufferHeight, BufferedImage.TYPE_INT_RGB);
+			offScreenWidth = bufferWidth;
+			offScreenHeight = bufferHeight;
+			offScreenScaleX = scaleX;
+			offScreenScaleY = scaleY;
 		}
 		Roi roi = imp.getRoi();
 		try {
@@ -550,22 +564,29 @@ public class ImageCanvas extends Canvas implements MouseListener, MouseMotionLis
 				imp.updateImage();
 			}
 			Graphics offScreenGraphics = offScreenImage.getGraphics();
-			setInterpolation(offScreenGraphics, Prefs.interpolateScaledImages);
-			Image img = imp.getImage();
-			if (img!=null)
-				offScreenGraphics.drawImage(img, 0, 0, srcRectWidthMag, srcRectHeightMag,
-					srcRect.x, srcRect.y, srcRect.x+srcRect.width, srcRect.y+srcRect.height, null);
-			Overlay overlay = imp.getOverlay();
-			if (overlay!=null)
-				drawOverlay(overlay, offScreenGraphics);
-			if (showAllOverlay!=null)
-				drawOverlay(showAllOverlay, offScreenGraphics);
-			if (roi!=null)
-				drawRoi(roi, offScreenGraphics);
-			if (srcRect.width<imageWidth || srcRect.height<imageHeight)
-				drawZoomIndicator(offScreenGraphics);
-			//if (IJ.debugMode) showFrameRate(offScreenGraphics);
-			g.drawImage(offScreenImage, 0, 0, null);
+			try {
+				if (scaleX!=1.0 || scaleY!=1.0)
+					((Graphics2D)offScreenGraphics).scale((double)bufferWidth/srcRectWidthMag,
+						(double)bufferHeight/srcRectHeightMag);
+				setInterpolation(offScreenGraphics, Prefs.interpolateScaledImages);
+				Image img = imp.getImage();
+				if (img!=null)
+					offScreenGraphics.drawImage(img, 0, 0, srcRectWidthMag, srcRectHeightMag,
+						srcRect.x, srcRect.y, srcRect.x+srcRect.width, srcRect.y+srcRect.height, null);
+				Overlay overlay = imp.getOverlay();
+				if (overlay!=null)
+					drawOverlay(overlay, offScreenGraphics);
+				if (showAllOverlay!=null)
+					drawOverlay(showAllOverlay, offScreenGraphics);
+				if (roi!=null)
+					drawRoi(roi, offScreenGraphics);
+				if (srcRect.width<imageWidth || srcRect.height<imageHeight)
+					drawZoomIndicator(offScreenGraphics);
+				//if (IJ.debugMode) showFrameRate(offScreenGraphics);
+			} finally {
+				offScreenGraphics.dispose();
+			}
+			g.drawImage(offScreenImage, 0, 0, srcRectWidthMag, srcRectHeightMag, null);
 		}
 		catch(OutOfMemoryError e) {IJ.outOfMemory("Paint");}
 	}
